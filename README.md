@@ -30,6 +30,3 @@ The data.zip is 176mb and exceeds githubs file size limit. DM me and I will send
 - Bioconductor packages
 - RStudio (for optimal R Markdown rendering)
 
-## Contact 📧
-[Your contact information]
-
