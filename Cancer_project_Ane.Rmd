@@ -1,0 +1,906 @@
+---
+title: "Exploring Variant Positioning in Protein Domains: Somatic vs. Germline"
+author: "Ane Kleiven"
+date: "2025-01-10"
+output: 
+  html_document:
+    number_sections: false
+    fig.caption: true  
+    toc: true 
+    toc_float: true
+    code_folding: hide
+    code_download: true
+    theme: journal
+---
+
+# Introduction 
+
+Cancer is a disease where parts of the body’s cells starts proliferating uncontrollably, and spread to other parts of the body (1). Cancer can occur almost everywhere in the human body. 
+Under normal conditions, cells grow and divide to form new cells. Old and damaged cells will die. 
+However, abnormal or damaged cells may sometimes grow and proliferate when they shouldn’t. 
+Such cells may form tumors, lumps of tissue. Tumors can either be malignant (cancerous) or benign (non-cancerous) (1).
+
+Malignant tumors can invade surrounding tissues and spread to other parts of the body to form new tumors; a process known as metastasis. In contrast, benign tumors do not spread, and will typically not return after removal (1). 
+
+Cancer is a genetic disease, caused by mutations in a person’s DNA. These mutations can disrupt normal cell signaling, leading to uncontrolled cell proliferation or the avoidance of apoptosis. Mutations may for instance be caused by DNA damage from chemicals or UV-light, which are classified as *somatic mutations* (1).
+
+Some types of cancer are inherited through mutations in sperm- or egg cells, passed from parent to child. These are called *germline mutations* (2) . Germline mutations that cause cancer are far less common than the somatic mutations. 
+
+## Background 
+
+Genes that can drive cancer development, are called oncogenes (3). To classify the oncogenicity of somatic variants, several guidelines have been developed (4). These guidelines are critical for ensuring consistency in how variants are clinically interpreted, as variability in interpretation can impact patient care. 
+
+However, current guidelines have been evaluated using a limited set of variants and may not apply to all variants. To better understand the functional effects and characteristics of somatic mutations in human tumors, it has been hypothesized that protein domain information can be used in classifying oncogenic mutations (5). Protein domains are structural and functional units of proteins. The majority of genetic variants occur in these units (5). 
+
+
+## Hypothesis 
+
+This report will explore the distribution of currently classified somatic oncogenic mutations in functional protein domains, compared to the distribution seen for germline variants. Specifically, the numbers of oncogenic mutations that occur within and outside of protein domains, will be compared with the numbers seen for germline variants in the same genes. 
+
+**The following hypothesis will be explored:**
+
+- H0: The distribution of somatic oncogenic variants in functional protein domains does not significantly differ from the distribution of germline variants.
+
+- H1: The distribution of somatic oncogenic variants in functional protein domains differs significantly from the distribution of germline variants.
+
+
+
+# Method 
+
+In this report, artificial intelligence (AI) and computational methods were used to analyze somatic and germline variants and their association with protein domains. The methods involved importing necessary libraries, presenting and preparing data for analysis, and mapping the mutations to relevant protein domains. The following sections describes the process.
+
+## The use of Artificial Intelligence
+
+In this report, artificial intelligence (AI) has been used to understand different errors and improve parts of the code.  
+
+Additionally, AI has been used to improve the language in some parts of the report, specifically by finding better describing words where necessary. 
+
+The AI tool for these tasks was *ChatGPT*.
+
+
+## Library Import 
+
+The initial code chunk was given some arguments, to avoid messages and warnings in the knitted HTML document. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Increase stack size for Pandoc
+
+options(pandoc.stack.size = "1024m")
+```
+
+Before reading the data, necessary libraries were imported using the function `library()`. 
+
+```{r loading libraries}
+
+# import necessary libraries 
+
+library(dplyr)
+library(tidyverse)
+library(ggplot2) 
+library(cowplot)
+library(knitr) 
+library(kableExtra)
+library(readr)
+library(vroom)
+library(pROC)
+
+```
+
+
+## Data Description
+
+The gene variants used in this project were collected from ClinVar. ClinVar is a public database by the National Center for Biotechnology Information (NCBI). 
+
+[The data from ClinVar](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz) represents three types of variant classifications (6). In this assignment, somatic oncogenic variants will be compared to germline variants in the same genes.
+
+To map the gene symbols from ClinVar to the UniProt accession numbers from PFam, the R package `geneOncoX` developed by Sigve Nakken was used (7). The code is shown in the code below.  
+
+```{r mapping gene symbols and uniprot accession numbers, message=FALSE, warning=FALSE, results='hide'}
+
+# cross reference between gene-symbols (from ClinVar) and UniProt accessions (from PFam) 
+
+remotes::install_github("sigven/geneOncoX")
+
+gene_xref <- geneOncoX::get_gencode(cache_dir = "data")
+
+geneSym2UniprotAcc <- gene_xref$records$grch38 |> dplyr::select(symbol, uniprot_acc) |> dplyr::filter(!is.na(uniprot_acc)) |> dplyr::distinct()
+
+```
+
+The mapping of Pfam accession numbers to UniProt accession numbers was downloaded from the [Pfam database](https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/) (8). 
+
+In the code below, the Pfam file was read using the function `read.table()`.  
+
+```{r loading pfam to uniprot mapping}
+
+# load table from pfam with pfam number mapped to the uniprot accession number 
+
+pfam_mapping <- read.table("data/pdb_pfam_mapping.txt", header = FALSE, sep = "\t", fill = TRUE, stringsAsFactors = FALSE) |> 
+  select(5, 11)
+
+colnames(pfam_mapping) <- as.character(pfam_mapping[1, ])
+
+pfam_mapping <- pfam_mapping[-1, ]
+```
+  
+For information on [protein domain names](https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.clans.tsv.gz) and [protein domain locations](https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.regions.tsv.gz) in human proteins, the Pfam protein domain resource was used (9). 
+
+The file containing protein domains was read using `read_tsv()` from the `readr` package. The column names were defined after reading the file. The protein domain table, `protein_domains`, contains 23,794 different protein domains from human proteins. The table has 5 columns; *Pfam*, *Pfam_clan*, *Clan*, *Symbol* and *Name*. 
+
+To load the file containing protein domain locations, the `vroom()` function from the `vroom` package was used. 
+Vroom is often used when loading big data files. 
+The first four columns were removed to reduce file complexity and save computational memory. 
+The table with protein domain locations, `domain_locations`, contains 28,145,099 observations. The table has three columns; 
+*pfamA_acc*, *seq_start* and *seq_end*, describing the sequence of the protein domain. 
+
+```{r loading protein domains}
+
+# load the table containing protein domain names 
+
+protein_domains <- readr::read_tsv("data/Pfam-A.clans.tsv", show_col_types = FALSE, col_names = FALSE)
+colnames(protein_domains) <- c("Pfam","Pfam_clan","Clan","Symbol","Name")
+
+
+
+# load the table containing protein domain locations 
+# reduce complexity be removing duplicates and excessive columns 
+
+domain_locations <- vroom("data/Pfam-A.regions.tsv.gz", show_col_types = FALSE) |>
+  
+  select(-c(1:4)) |>
+  
+  distinct(pfamA_acc, seq_start, seq_end, .keep_all = TRUE) 
+
+```
+
+```{r table 1}
+
+kable(head(protein_domains, 12), caption = "Table 1: Subset of the protein domains") |>
+  
+  kable_minimal(bootstrap_options = c("striped","condensed"), full_width = FALSE, font_size = 12) |>
+  
+  kable_styling(position = "left")
+
+```
+
+Table 1 presents the 12 first rows in `protein_domains`, showing Pfam entries and their associated protein domains.
+
+## Preparing Variant Data for Analysis
+
+Since the original data set contains a lot of information and takes up a lot of memory, the data set had to be cleaned and reduced for further mapping and analysis. The relevant variants were extracted. 
+
+### Loading Data and extracting Variants 
+
+The variant data, was loaded using `vroom()` in R. The original variant data table contains 3,060,466 rows (variants) and 40 columns, including variant types, names, gene symbols, variant positions, clinical significance, oncogenicity etc. 
+
+The original variant data set contains two variant assemblies. To avoid duplicates, one of the assemblies was removed. This step was performed with the `filter()` function in the `dplyr`package. 
+
+```{r loading variant data}
+
+# load the data and choose assembly 
+
+variant_data <- vroom::vroom("data/variant_summary.txt.gz",
+                      show_col_types = FALSE) |>
+  
+  dplyr::filter(Assembly == "GRCh38")
+
+```
+
+Somatic oncogenic variants were extracted from `variant_data` and saved in the tibble *oncogenic* in the set `variant_set`. The tibble containing somatic oncogenic variants consists of 506 variants before mapping. 
+
+Germline variants from the same genes as the somatic oncogenic variants were extracted from `variant_data`and saved in the tibble *germline_control* in `variant_set`. The tibble containing germline controls consists of 10,785 variants before mapping. 
+
+```{r}
+
+# filter out the somatic oncogenic variants and store them in variant_sets[['oncogenic']]
+
+variant_sets <- list()
+variant_sets[['oncogenic']] <- variant_data |>
+  
+  dplyr::filter(
+    stringr::str_detect(tolower(Oncogenicity),"oncogenic") &
+    stringr::str_detect(tolower(OriginSimple),"somatic"
+  ))
+
+
+# only consider germline variants (for comparison) in genes that have oncogenic variants
+
+variant_sets[['germline_control']] <- variant_data |>
+  
+  dplyr::filter(
+    Oncogenicity == "-" &
+    !stringr::str_detect(tolower(OriginSimple),"somatic") &
+    !stringr::str_detect(tolower(OriginSimple),"germline")
+    
+  ) |>
+  
+  dplyr::semi_join(
+    dplyr::select(variant_sets[['oncogenic']], GeneSymbol),
+    by = "GeneSymbol"
+  )
+
+
+```
+
+### Mapping Variants to UniProt and Pfam accession numbers
+
+UniProt accession numbers were added to both sets in `variant_sets` by matching gene symbols with `geneSym2UniprotAcc` using `left.join()` from `dplyr`.
+
+```{r}
+
+# map the uniprot accession number to the variant sets 
+
+for (set in c('oncogenic','germline_control')){
+  variant_sets[[set]] <- variant_sets[[set]] |>
+
+      dplyr::left_join(geneSym2UniprotAcc, by = c("GeneSymbol" = "symbol"))
+   }
+
+```
+
+The column containing the variant names, *Name*, was mutated into two columns: *Name* and *Variant*, to fish out the variants. The functions `mutate()` and `separate()` in `dplyr` was used. 
+
+Also, the column *Position* was made, extracting the amino acid position of the variants. 
+
+To clean the data and reduce complexity, several columns were removed using `select()` in `dplyr`. 
+
+```{r data wrangling variant_sets}
+
+# mutate the name column into "name" and "variant" 
+
+for (set in c('oncogenic', 'germline_control')){ 
+  variant_sets[[set]] <- variant_sets[[set]] |> 
+    
+    dplyr::mutate(Name = gsub("[()]", "", Name)) |> 
+    
+    tidyr::separate(col = "Name", into = c("Name", "Variant"), sep = " ") |>
+    
+    
+# extract the position from the variant column 
+    
+    dplyr::mutate(Position = as.numeric(stringr::str_extract(Variant, "\\d+")))
+} 
+
+# remove excessive columns 
+
+for (set in c('oncogenic', 'germline_control')) { 
+  variant_sets[[set]] <- variant_sets[[set]] |> 
+    
+  dplyr::select(-c(ClinSigSimple, LastEvaluated, 'RS# (dbSNP)', 'nsv/esv (dbVar)', 
+                  RCVaccession,PhenotypeIDS,ChromosomeAccession, Chromosome, Start, Stop, 
+                  ReferenceAllele, ReferenceAlleleVCF, HGNC_ID, Assembly,PhenotypeList,
+                  AlternateAllele, Cytogenetic, ReviewStatus, NumberSubmitters, Guidelines, 
+                  TestedInGTR, OtherIDs, SubmitterCategories, VariationID, PositionVCF, 
+                  AlternateAllele, AlternateAlleleVCF, SomaticClinicalImpact, 
+                  SomaticClinicalImpactLastEvaluated, ReviewStatusClinicalImpact, 
+                  OncogenicityLastEvaluated, ReviewStatusOncogenicity
+                   ))}
+```
+
+Pfam accession numbers were mapped to UniProt accession numbers by matching UniProt accession numbers in `variant_sets` and `pfam_mapping` using `left.join()` from `dplyr`. 
+
+The column name *PFAM_ACCESSION* was changed to *Pfam*, using `rename()`, and `distinct()` was applied to remove duplicate rows. 
+
+```{r mapping pfam accession numbers to variant sets }
+
+# map the pfam accession numbers to variant_sets 
+
+for (set in c('oncogenic', 'germline_control')){ 
+  variant_sets[[set]] <- variant_sets[[set]] |> 
+    
+    dplyr::left_join(pfam_mapping, by = c("uniprot_acc" = "UNIPROT_ACCESSION")) |> 
+  
+    dplyr::rename(Pfam = PFAM_ACCESSION) |> 
+    
+    dplyr::distinct()
+} 
+
+```
+
+### Mapping Variants to Protein Domains 
+
+Protein domains were mapped to both sets in `variant_sets` by matching common Pfam accession numbers. As in previous mappings, `left_join()` from `dplyr` was used to integrate the data.  
+
+Again, the `distinct()` function was applied to remove duplicate rows. 
+
+Some of the columns were renamed, to make the table cleaner and more readable. 
+
+Rows with NA-values in either the *Position* or *Pfam* column were excluded.
+
+```{r mapping protein domains to variant sets}
+
+# map the protein domains to the variant sets 
+
+for (set in c('oncogenic', 'germline_control')){ 
+    variant_sets[[set]] <- variant_sets[[set]] |>
+      
+  dplyr::left_join(protein_domains, by = "Pfam") |>
+
+      
+  dplyr::distinct() |> 
+      
+  # clean column names 
+  dplyr::rename('Protein domain name' = Name.y, 'Variant name' = Name.x) |>
+  
+  # remove na values   
+  dplyr::filter(!is.na(Position) & !is.na(Pfam))
+}
+```
+
+To optimize data processing, rows in `domain_locations` with pfam accession numbers not present in `variant_sets` were removed. 
+
+Additionally, duplicate rows based on **pfam_acc*, *seq_start*, and *seq_end* were eliminated to further reduce the table size.
+
+The filtered data was saved in the variable named `domain_filtered`. 
+
+```{r reduce the protein domain location data set}
+
+# remove rows with pfam accessions not in variant sets 
+
+for (set in c('oncogenic', 'germline_control')) { 
+  domain_filtered <- domain_locations |>
+    
+    dplyr::semi_join(variant_sets[[set]], by = c("pfamA_acc" = "Pfam"))
+} 
+
+# remove identical rows with matching pfamA_acc, seq_start and seq_end 
+
+domain_filtered <- domain_filtered |> 
+  
+  dplyr::distinct(pfamA_acc, seq_start, seq_end)
+
+```
+
+Protein domain locations from `domain_filtered` was mapped to the somatic oncogenic variants in `variant_sets`, using `left_join()` and `distinct()` from `dplyr`. 
+
+A new column, `variant_in_domain`, was created to indicate the position of the variant. A value of 1 denotes that the variant is located within the protein domain, while a value of 0 indicates it is outside the protein domain.
+
+The tibble *oncogenic* in `variant_sets`, contains 15,487,284 rows after mapping.
+
+```{r mapping protein domain locations to oncogenic variants}
+
+# map the protein domain locations to somatic oncogenic variants 
+
+variant_sets[['oncogenic']] <- variant_sets[['oncogenic']] |>
+
+    dplyr::left_join(domain_filtered, by = c("Pfam" = "pfamA_acc")) |>
+  
+    dplyr::distinct() |> 
+
+# new column `variant_in_domain` 
+  
+    dplyr::mutate(
+      Position = as.numeric(Position),
+      seq_start = as.numeric(seq_start),
+      seq_end = as.numeric(seq_end),
+      variant_in_domain = dplyr::case_when(
+        !is.na(Position) & !is.na(seq_start) & !is.na(seq_end) & 
+        Position >= seq_start & Position <= seq_end ~ 1,
+        TRUE ~ 0))
+
+```
+
+```{r tab2}
+
+kable(head(variant_sets[['oncogenic']],10), caption = "Table 2: Subset of the mapped somatic oncogenic mutations") |>
+  
+  kable_minimal(bootstrap_options = c("striped", "condensed"), full_width = FALSE, font_size = 12) |>
+  
+  kable_styling(position = "left") |>
+  
+  scroll_box(width = "100%", height = "400px")
+```
+
+
+Table 2 provides a subset of the table containing somatic oncogenic variants, displaying the first ten rows. 
+
+Given that the number of germline control variants is approximately ten times greater than that of somatic oncogenic variants, the mapping of protein domain locations to variants was performed in chunks. The chunk size was set to 3 000, dividing the germline variants into 9 chunks. 
+
+As with the somatic oncogenic variants, a new column was created, `variant_in_domain`, to indicate the position of each variant relative to protein domains. 
+The processed chunks were stored in the empty list `germline_control_mapped`. 
+`germline_control_mapped` consists of 9 tibbles, each containing 15 to 45 million variants mapped to protein domain locations." 
+
+```{r mapping protein domain locations to germline controls}
+
+germline_control_mapped <- list()
+
+chunk_size <- 3000 
+
+num_chunks <- ceiling(nrow(variant_sets[['germline_control']]) / chunk_size)
+
+for (i in 1:num_chunks) {
+  start_row <- (i - 1) * chunk_size + 1
+  end_row <- min(i * chunk_size, nrow(variant_sets[['germline_control']]))
+
+  chunk <- variant_sets[['germline_control']][start_row:end_row, ]
+
+# Process the chunk
+  
+  result <- chunk |>
+    
+    dplyr::left_join(domain_filtered, by = c("Pfam" = "pfamA_acc")) |>
+    
+    dplyr::distinct() |>
+    
+    dplyr::mutate(
+      Position = as.numeric(Position),
+      seq_start = as.numeric(seq_start),
+      seq_end = as.numeric(seq_end),
+      variant_in_domain = dplyr::case_when(
+        !is.na(Position) & !is.na(seq_start) & !is.na(seq_end) & 
+        Position >= seq_start & Position <= seq_end ~ 1,
+        TRUE ~ 0
+      )
+    )
+  
+# Store each result chunk in the list
+  
+  germline_control_mapped[[i]] <- result
+}
+```
+
+# Results 
+
+To explore the distribution of the variants, different bar plots were created. These plots provided insights into the variant distribution in protein domains. To further evaluate the hypothesis, statistical analyses were applied to assess the significance in the data. This section presents the results of both the visualizations and the applied statistical analyses. 
+
+## Visualizing the Data
+
+### Top Protein Domains 
+
+The figure below shows a subset of the protein domains mapped to somatic oncogenic variants, specifically the 8 domains with the highest number of mapped variants. The bars are annotated by protein domain symbol. 
+
+```{r fig1, fig.width= 6, fig.height= 4, fig.cap = "**Figure 1:** Overview of the Somatic Oncogenic Variants and domain distribution"}
+
+# group the oncogenic variants by domain name, symbol and variant type
+# count the observations in each group 
+# remove grouping 
+
+grouped_oncogenic <- variant_sets[['oncogenic']] |> 
+  
+  group_by(`Protein domain name`, Type, `Symbol`) |> 
+  
+  summarize(Count = n(), .groups = "drop") 
+
+
+# find the 8 domains with the highest counts 
+top_domains <- grouped_oncogenic |>
+  
+  group_by(`Symbol`)|>
+  
+  summarise(TotalCount = sum(Count)) |>
+  
+  top_n(8, TotalCount) |>
+  
+  pull(`Symbol`)
+
+
+# filter the grouped_oncogenic to only contain top domains
+grouped_oncogenic <- grouped_oncogenic |>
+  
+  filter(`Symbol` %in% top_domains)
+
+
+# plot the top domains 
+ggplot(grouped_oncogenic) + 
+  
+  aes(x = `Symbol`, y = Count, fill = `Symbol`) + 
+  
+  geom_bar(stat = "identity", position = "dodge") +
+  
+  labs(x = "Protein Domain Symbol",
+    y = "Count", 
+       title = "Top 8 Protein Domains in Somatic Oncogenic variants") +
+  
+ scale_fill_manual(
+  values = c(
+    "#FFD1DC", 
+    "#FFB3C6", 
+    "#FF99B5", 
+    "#FF80A4", 
+    "#F76D94", 
+    "#E85484", 
+    "#D43D73", 
+    "#BA2C5D"  
+  )) +
+  
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 6.5), 
+        plot.title = element_text(hjust = 0.4, face = "bold", size = 12.5)) + 
+
+
+  guides(fill = "none")
+
+```
+
+The protein domain named *Protein tyrosine and serine/threonine kinase (PK_Tyr_Ser-Thr)* shows the highest number of mapped variants. *Protein kinase (Pkinase)* is the second most mapped domain. 
+
+Protein Kinases often show abnormal activity in many cancers and have become important tumor biomarkers (10). Kinase inhibitors have also been developed for cancer treatment. The second most mapped variant is also a protein kinase.
+
+Another important protein domain associated with somatic oncogenic variants is the *RAS* domain. Mutations in the RAS family are among the most frequently observed in cancer (11). The RAS protein domain is represented as bar number 7 in the figure.
+
+### Comparison of Variant Distribution: Somatic Oncogenic vs. Germline
+
+```{r fig2, fig.width= 6, fig.height= 4, fig.cap= "**Figure 2:** Distribution of Somatic Oncogenic and Germline variants in Protein Domains", warning=FALSE}
+
+# count the number of somatic oncogenic variants inside and outside protein domains 
+count_oncogenic <- variant_sets[['oncogenic']] |> 
+  
+  count(`variant_in_domain`,`Type`)
+
+
+# plot the distribution of somatic oncogenic variants 
+oncogenic_plot <- ggplot(count_oncogenic) +
+  
+  aes(x = factor(`variant_in_domain`), y = n) +
+  
+  geom_bar(stat = "summary", fun = "sum", fill = "#bf3964") +
+  
+  scale_x_discrete(labels = c("Outside domain", "Inside domain")) + 
+  
+  labs(
+    x = "Somatic Oncogenic",
+    y = "Counts"
+  ) +
+  
+  theme_minimal() +
+  
+  theme(axis.text.x = element_text(face = "bold"), 
+        axis.texy.y = element_text(face = "bold"), 
+        plot.title = element_text(hjust = 0.5, size = 13))
+
+
+# count the number of germline controls inside and outside protein domains 
+count_germline <- lapply(germline_control_mapped[1:9], function(chunk) {
+  chunk |> 
+    
+    count(variant_in_domain, Type)
+})
+
+# bind rows together 
+count_germline <- dplyr::bind_rows(count_germline)
+
+
+# summarise the results 
+summary_count_germline <- count_germline |> 
+  
+  group_by(variant_in_domain, Type) |>
+  
+  summarise(n = sum(n))
+
+
+# plot the distribution of germline variants 
+germline_plot <- ggplot(summary_count_germline) +
+  
+  aes(x = factor(`variant_in_domain`), y = n) +
+  
+  geom_bar(stat = "summary", fun = "sum", fill = "#edabca") +
+  
+  labs(
+    x = "Germline",
+    y = "Counts"
+  ) +
+  
+  scale_x_discrete(labels = c("Outside domain", "Inside domain")) + 
+  
+  theme_minimal() +
+  
+  theme(axis.text.x = element_text(face = "bold"),
+        axis.texy.y = element_text(face = "bold"),
+        plot.title = element_text(hjust = 0.5))
+
+ 
+# visualize the two plots side by side 
+combined_plot <- plot_grid(oncogenic_plot, germline_plot, cols = 2) 
+  
+  ggdraw() + draw_plot(combined_plot, 0, 0, 1, 0.92) + 
+ 
+  draw_label("Variant Distribution in Protein Domains", 
+             x = 0.5, y = 0.94, size = 12.5, fontface = "bold") + 
+    theme_minimal()
+
+```
+
+Figure 2 shows the number of somatic oncogenic variants and germline variants positioned inside versus outside of protein domains. The majority of variants are placed outside protein domains for both groups. 
+
+### Distribution of Somatic Oncogenic Variants
+
+```{r fig3, fig.width= 6, fig.height= 4, fig.cap= "**Figure 3:** Distribution of Somatic Oncogenic Variants in protein domains across variant types"}
+
+# plot the distribution across variant types 
+ggplot(count_oncogenic) +
+  
+  aes(x = factor(`variant_in_domain`), y = n, fill = Type) +
+  
+  geom_col(position = "dodge2") +
+  
+scale_fill_manual(
+  values = c(
+    Deletion = "#FDE8F0",      
+    Duplication = "#EBA6C6",    
+    `single nucleotide variant` = "#B44F79",
+    Indel = "#CBA5E6",          
+    Insertion = "#D080B3",     
+    Inversion = "#A84E6F",    
+    Microsatellite = "#D4A1B8"  
+  )) + 
+  
+  scale_x_discrete(labels = c("Outside domain", "Inside domain")) + 
+  
+  labs(
+    x = "Somatic Oncogenic variants",
+    y = "Counts",
+    title = "Somatic Oncogenic Variants in Protein Domains"
+  ) +
+  
+  theme_minimal() +
+  
+  theme(axis.text.y = element_text(face = "bold"),
+    axis.text.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 12.5, hjust = 0.5))
+
+```
+
+Figure 3 provides a detailed overview of the variant distribution within protein domains for somatic oncogenic variants, categorized by mutation type. Similar to the previous figure, the majority of variants are located outside protein domains. Single nucleotide variants are the most prevalent mutation type, both inside and outside protein domains.
+
+### Distribution of Germline Variants 
+
+```{r fig4, fig.width= 6, fig.height= 4, fig.cap= "**Figure 4:** Distribution of Germline variants in protein domains across variant types"}
+
+# plot the distribution of germline controls across variant types 
+
+summary_count_germline |>
+  
+ ggplot() +
+  
+  aes(x = factor(`variant_in_domain`), y = n, fill = Type) +
+  
+  geom_col(position = "dodge2") +
+                         
+scale_fill_manual(
+  values = c(
+    Deletion = "#E8A9D4",              
+    Duplication = "#E2BAD8",           
+    Indel = "#FDC5CB",                 
+    Insertion = "#F999B8",            
+    Inversion = "#E573B0",            
+    `single nucleotide variant` = "#E66A8E",  
+    Microsatellite = "#D68FB8",       
+    `copy number gain` = "#E48A9E",  
+    `copy number loss` = "#E26F7B"    
+  )) + 
+  
+  scale_x_discrete(labels = c("Outside domain", "Inside domain")) + 
+  
+  labs(
+    x = "Germline variants",
+    y = "Counts",
+    title = "Germline Variants in Protein Domains"
+    
+  ) +
+  
+  theme_minimal() +
+  
+  theme(
+    axis.text.y = element_text(face = "bold"),
+    axis.text.x = element_text(face = "bold", hjust = 0.5),
+    plot.title = element_text(face = "bold", size = 12.5, hjust = 0.5)
+    
+  )
+
+```
+
+Figure 3 provides a detailed overview of the variant distribution within protein domains for germline variants, categorized by mutation type. Similar to the somatic oncogenic variants, the single nucleotide variants are the most prevalent both inside and outside the protein domains. 
+
+## Statistical Comparison of Variants in Protein Domains
+
+In order to answer the hypotheses, some statistics was applied to the data. 
+
+### Chi-Squared Test
+
+First of all, a simple Chi-squared test was performed to check if there was a difference between the groups. 
+The significance level was set to 5 %. 
+
+To perform the Chi-squared test, all the observations were counted and classified in terms of variant type and domain position. A contingency table of the counts was made. 
+
+```{r contingency table}
+
+# contingency table of the somatic oncogenic variants 
+contingency_oncogenic <- count_oncogenic |> 
+  
+  group_by(variant_in_domain) |>
+  
+  summarise(n = sum(n)) |>
+  
+  mutate('Variant type' = "somatic oncogenic")
+
+
+# contingency table of the germline controls 
+contingency_germline <- summary_count_germline  |> 
+  
+  group_by(variant_in_domain) |>
+  
+  summarise(n = sum(n)) |> 
+  
+  mutate('Variant type' = "germline")
+
+
+# bind the tables together 
+contingency_tab <- rbind(contingency_germline, contingency_oncogenic)
+
+
+# reformat the table
+contingency_table <- xtabs(n ~ `Variant type` + variant_in_domain, data = contingency_tab)
+
+
+# change column names 
+colnames(contingency_table) <- c("Outside Domain", "Inside Domain")
+
+
+# display table 
+kable(head(contingency_table), caption = "Table 3: Contingency table of the variant distribution") |> 
+  
+  kable_minimal(bootstrap_options = c("bordered"), full_width = FALSE, position = "left") |> 
+  
+  column_spec(1:ncol(contingency_table), width = "5em") |>
+  
+  kable_styling(font_size = 12, position = "left")
+
+```
+
+The number of germline variants is higher than the number of somatic variants. However, their distribution inside and outside protein domains appears to be relatively similar. The contingency table is displayed above. 
+
+```{r chi squared test}
+# apply chi-squared test on the contingency table 
+chisq.test(contingency_table)
+
+```
+
+The results of the Chi-squared test is shown above. With a p-value of < 0.05, we can reject the null hypothesis at 5 % significance level. This indicates a significant difference in distribution of somatic oncogenic variants compared to germline controls across functional protein domains. 
+
+### Logistic Regression 
+
+To further investigate this relationship, a regression model can be applied. This approach enables a deeper exploration of how oncogenic mutations and germline variants are distributed within functional protein domains, using different predictors. 
+
+Given that the response variable is categorical with two levels (inside or outside a protein domain), a generalized linear model (GLM) with binomial family was used for analysis. 
+
+The response variable, `variant_in_domain`, is a binary indicator where 1 implies that a variant is inside the protein domain, and 0 implies that it is outside. The predictor variable,`Oncogenicity`, classies variants into three categories: "Oncogenic", "Likely oncogenic" and "None". For simplicity, the "Likely Oncogenic" category was merged into "Oncogenic." The "None" category represents germline variants.
+
+The significance level was set to 5 %. 
+
+Since the number of germline variants is substantially larger than the number of somatic variants, the dataset was balanced by randomly selecting a subset of germline variants, equal to the number of somatic variants.
+
+The GLM model used for this analysis is specified in the code below.
+
+
+```{r logistic regression model}
+
+# extract the columns needed for the logistic regression model 
+
+# oncogenic variants 
+oncogenic <- variant_sets[['oncogenic']] |>
+  
+  select(c(Type, variant_in_domain, Oncogenicity)) |>
+  
+  mutate(Oncogenicity = recode(Oncogenicity, "Likely oncogenic" = "Oncogenic"))
+
+
+# germline variants 
+germline <- lapply(germline_control_mapped[1:9], function(df) {
+  df |>
+    
+    select(Type, variant_in_domain, Oncogenicity) |>
+    
+    mutate(Oncogenicity = recode(Oncogenicity, "-" = "None"))
+})
+
+
+# make a subset of germline variants, same length as oncogenic
+germline_subset <- bind_rows(germline) |>
+  
+  sample_n(nrow(oncogenic))
+
+
+# bind the variants together 
+variants_combined <- rbind(oncogenic, germline_subset)
+
+
+# turn the levels into factors 
+variants_combined <- variants_combined |> 
+  
+  mutate(
+    variant_in_domain = factor(variant_in_domain, levels = c("0", "1")),
+    Oncogenicity = factor(Oncogenicity, levels = c("Oncogenic", "None")))
+
+# apply data to logistic model 
+model <- glm(variant_in_domain ~ Oncogenicity, data = variants_combined, family = binomial())
+summary(model)
+
+```
+
+The result from the logistic regression model with binomial family is shown above. 
+
+The estimate shows that the log-odds for an oncogenic variant to be inside a protein domain is -1.939. 
+The log-odds can be converted to odds-ratio (OR). This gives us a value of 0.144, meaning that the odds of a variant being inside the domain are 85.6 % lower compared to being outside the protein domain - for the somatic oncogenic variants. 
+
+For a germline variant (OncogenicityNone) to be inside a protein domain, the log odds changes by -0.334. 
+This means that the germline variants in the subset is less likely to be inside a protein domain, compared to the somatic oncogenic variants. 
+
+The log-odds can be converted to odds-ratio (OR). This gives us a value of 0.716, meaning that the germline variants are 28.4 % less likely to be inside the protein domains, compared to the somatic variants. 
+
+Both p-values are < 0.05. The results are statistically significant at 5% significance level. 
+
+The residual deviance is lower than the null deviance, meaning that the predictor variable `Oncogenicity` explains some of the variability in the data. 
+
+```{r odds ratio, results = 'hide'}
+OR_intercept <- exp(-1.939)
+OR_intercept
+
+OR_germline <- exp(-0.334)
+OR_germline
+
+```
+
+### Assessing the Model 
+
+```{r fig5: ROC curve, fig.width= 5.5, fig.height= 3.5, fig.cap= "**Figure 5:** Receiver-operating characteristic curve (ROC) of the logistic regression model"}
+
+predicted_probs <- predict(model, type = "response")
+
+roc_curve <- pROC::roc(variants_combined$variant_in_domain, predicted_probs)
+
+plot(roc_curve, main = "ROC Curve", col = "#F887AC", lwd = 2)
+
+```
+
+```{r Area under the curve}
+
+print(auc(roc_curve))
+```
+
+To further investigate the model, a ROC-curve was made and the area under the curve (AUC) was calculated. 
+The results gave a AUC value of 0.54, where 1 is a perfect model. A result of 0.5 tells us that the model performs no better than random guessing. 
+
+# Conclusion
+
+In this study, protein domains and their positions were mapped to both somatic oncogenic variants and germline variants. The primary aim was to determine whether there is a difference between somatic oncogenic variants and germline variants in their positioning, whether they are more likely to be located inside or outside protein domains. 
+
+Mapping oncogenic variants to protein domains provided valuable insight into their enrichment in protein domains. This is essential information in cancer research and could contribute to identifying new therapeutic targets. 
+
+To investigate the relationship between variant type and domain positioning, a Chi-squared test was performed. The test showed significant difference between the two groups and their positions in protein domains at 5 % significance level. 
+
+To further evaluate the hypothesis, a logistic regression model was applied. The results indicated a significant difference between germline and somatic oncogenic variants in their positioning within protein domains. However, the model's performance, as assessed by the ROC curve and AUC score, was weak. This raises concerns about the reliability of the findings.
+
+A major limitation of this study was computational memory. The data set with mapped germline controls was therefore massively reduced for the linear regression model. Only a randomly selected subset of germline variants was included in this analysis. This may have resulted in missing important patterns and reduced robustness of the analysis.
+
+For future research, analyzing the full set of germline variants would be essential to obtain a more comprehensive picture of domain positioning. Additionally, investigating variant positioning in relation to clinical significance could provide further insight. For example, whether variants of uncertain significance are positioned differently compared to known pathogenic variants. It could also be valuable to investigate whether the distribution differs across different variant types, such as single nucleotide variants, deletions and insertions. This could provide additional insights into how mutation types are positioned in relation to protein domains. 
+
+Although the findings suggest a potential difference in how somatic oncogenic variants and germline variants are positioned relative to protein domains, the limitations of this study make it hard to conclude. Further research with the full data set and improved model performance is necessary to validate the results and explore their implications for cancer diagnostics and treatment. 
+
+# References 
+
+1.	National Cancer Institute. What Is Cancer? 2011 [sitert 13. januar 2025]; Tilgjengelig på: https://www.cancer.gov/about-cancer/understanding/what-is-cancer
+
+2.	National Cancer Institute. Germline mutation. I National Institutes of Health; [sitert 14. januar 2025]. Tilgjengelig på: https://www.cancer.gov/publications/dictionaries/cancer-terms/def/germline-mutation
+
+3.	Liu PaulP. Oncogene. 2025 [sitert 13. januar 2025]. Oncogene. Tilgjengelig på: https://www.genome.gov/genetics-glossary/Oncogene
+
+4.	Horak P, Griffith M, Danos AM, Pitel BA, Madhavan S, Liu X. Standards for the classification of pathogenicity of somatic variants in cancer (oncogenicity): Joint recommendations of Clinical Genome Resource (ClinGen), Cancer Genomics Consortium (CGC), and Variant Interpretation for Cancer Consortium (VICC). Genet Med [Internett]. 2022 [sitert 14. januar 2025]; Tilgjengelig på: https://pubmed.ncbi.nlm.nih.gov/35101336/
+
+5.	Emerson IA, Chitluri KK. DCMP: database of cancer mutant protein domains. Database [Internett]. 2021 [sitert 13. januar 2025]; Tilgjengelig på: https://pubmed.ncbi.nlm.nih.gov/34791106/
+
+6.	National Center for Biotechnology Information. Representation of classifications in ClinVar [Internett]. 2024 [sitert 14. januar 2025]. Tilgjengelig på: https://www.ncbi.nlm.nih.gov/clinvar/docs/clinsig/
+
+7.	Nakken S. geneOncoX: Human gene annotations for the oncology domain [Internett]. 2025 [sitert 12. januar 2025]. Tilgjengelig på: https://sigven.github.io/geneOncoX/
+
+8.	Mistry J, Chuguransky S, Williams L, Matloob Q. Pfam: The protein families database in 2021. Nucleic Acids Res. 2021;49(D1):D412–9. 
+
+9.	Pfam. European Bioinformatics Institute (EMBL-EBI). 2024 [sitert 20. januar 2025]; Tilgjengelig på: https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release
+
+10.	Bullar KS, Lagarón NO, McGowan EM, Parmar I, Jha A, Hubbard BP. Kinase-targeted cancer therapies: progress, challenges and future directions. Mol Cancer [Internett]. 2018 [sitert 21. januar 2025];17(48). Tilgjengelig på: https://molecular-cancer.biomedcentral.com/articles/10.1186/s12943-018-0804-2
+
+11.	Yang X, Wu H. RAS signaling in carcinogenesis, cancer therapy and resistance mechanisms. J Hematol Oncol [Internett]. 2024 [sitert 23. januar 2025];17(108). Tilgjengelig på: https://jhoonline.biomedcentral.com/articles/10.1186/s13045-024-01631-9
+
+
+
